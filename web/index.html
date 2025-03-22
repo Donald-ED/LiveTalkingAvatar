@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Talking Avatar Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #controls {
+            margin-bottom: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-left: 5px solid #4CAF50;
+        }
+        #video-container {
+            margin-top: 20px;
+        }
+        video {
+            max-width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Talking Avatar</h1>
+    
+    <div id="controls">
+        <textarea id="text-input" placeholder="Type what you want the avatar to say..."></textarea>
+        <button id="speak-button">Generate Avatar</button>
+        <button id="stop-button">Stop</button>
+    </div>
+    
+    <div id="status">Ready</div>
+    
+    <div id="video-container"></div>
+
+    <script>
+        // Base URL for the HTTP server serving video files
+        const BASE_VIDEO_URL = 'http://localhost:8000/';
+        
+        const ws = new WebSocket('ws://localhost:8765');
+        const speakButton = document.getElementById('speak-button');
+        const stopButton = document.getElementById('stop-button');
+        const textInput = document.getElementById('text-input');
+        const statusDiv = document.getElementById('status');
+        const videoContainer = document.getElementById('video-container');
+        
+        // WebSocket event handlers
+        ws.onopen = function(event) {
+            statusDiv.textContent = 'Connected to server';
+            speakButton.disabled = false;
+        };
+        
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            console.log('Received message:', data);
+            
+            if (data.type === 'status') {
+                statusDiv.textContent = data.message;
+            } else if (data.type === 'result') {
+                statusDiv.textContent = data.message;
+                
+                // Construct complete video URL using the base URL
+                const videoUrl = BASE_VIDEO_URL + data.video_url;
+                console.log('Video URL:', videoUrl);
+                
+                const videoElement = document.createElement('video');
+                videoElement.controls = true;
+                videoElement.src = videoUrl;
+                videoElement.style.display = 'block';
+                videoElement.style.marginTop = '10px';
+                
+                // Add video with timestamp
+                const timestamp = new Date().toLocaleTimeString();
+                const videoWrapper = document.createElement('div');
+                videoWrapper.innerHTML = `<h3>Generated at ${timestamp}</h3>`;
+                videoWrapper.appendChild(videoElement);
+                
+                videoContainer.prepend(videoWrapper);
+                
+                // Enable speak button
+                speakButton.disabled = false;
+            } else if (data.type === 'error') {
+                statusDiv.textContent = data.message;
+                statusDiv.style.borderLeftColor = 'red';
+                // Enable speak button
+                speakButton.disabled = false;
+            }
+        };
+        
+        ws.onclose = function(event) {
+            statusDiv.textContent = 'Disconnected from server';
+            statusDiv.style.borderLeftColor = 'orange';
+            speakButton.disabled = true;
+        };
+        
+        ws.onerror = function(error) {
+            statusDiv.textContent = 'WebSocket error';
+            statusDiv.style.borderLeftColor = 'red';
+            console.error('WebSocket error:', error);
+        };
+        
+        // Button event handlers
+        speakButton.addEventListener('click', function() {
+            const text = textInput.value.trim();
+            if (text) {
+                // Disable button while processing
+                speakButton.disabled = true;
+                statusDiv.style.borderLeftColor = '#4CAF50';
+                
+                // Send text to server
+                ws.send(JSON.stringify({
+                    type: 'speak',
+                    text: text
+                }));
+            } else {
+                statusDiv.textContent = 'Please enter some text';
+                statusDiv.style.borderLeftColor = 'orange';
+            }
+        });
+        
+        stopButton.addEventListener('click', function() {
+            ws.send(JSON.stringify({
+                type: 'stop'
+            }));
+            statusDiv.textContent = 'Stopping current process';
+        });
+    </script>
+</body>
+</html>

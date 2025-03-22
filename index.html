@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Talking Avatar Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #controls {
+            margin-bottom: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 100px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #status {
+            margin: 20px 0;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-left: 5px solid #4CAF50;
+        }
+        #video-container {
+            margin-top: 20px;
+        }
+        video {
+            max-width: 100%;
+        }
+        #debug {
+            margin-top: 30px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time Talking Avatar</h1>
+    
+    <div id="controls">
+        <textarea id="text-input" placeholder="Type what you want the avatar to say..."></textarea>
+        <button id="speak-button" disabled>Generate Avatar</button>
+        <button id="stop-button">Stop</button>
+        <button id="reconnect-button">Reconnect WebSocket</button>
+    </div>
+    
+    <div id="status">Connecting to WebSocket server...</div>
+    
+    <div id="video-container"></div>
+    
+    <div id="debug">
+        <h3>Debug Information:</h3>
+        <div id="debug-log"></div>
+    </div>
+
+    <script>
+        // Base URL for the HTTP server serving video files
+        const BASE_VIDEO_URL = 'http://localhost:8000/';
+        const WS_URL = 'ws://localhost:8765';
+        
+        const speakButton = document.getElementById('speak-button');
+        const stopButton = document.getElementById('stop-button');
+        const reconnectButton = document.getElementById('reconnect-button');
+        const textInput = document.getElementById('text-input');
+        const statusDiv = document.getElementById('status');
+        const videoContainer = document.getElementById('video-container');
+        const debugLog = document.getElementById('debug-log');
+        
+        let ws = null;
+        
+        // Debug logging function
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            console.log(`[${timestamp}] ${message}`);
+            debugLog.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+        
+        // WebSocket setup
+        function setupWebSocket() {
+            log('Setting up WebSocket connection...');
+            statusDiv.textContent = 'Connecting to WebSocket server...';
+            statusDiv.style.borderLeftColor = '#FFA500'; // Orange
+            speakButton.disabled = true;
+            
+            try {
+                ws = new WebSocket(WS_URL);
+                
+                ws.onopen = function(event) {
+                    log('WebSocket connected!');
+                    statusDiv.textContent = 'Connected to server';
+                    statusDiv.style.borderLeftColor = '#4CAF50'; // Green
+                    speakButton.disabled = false;
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    log(`Received message: ${JSON.stringify(data)}`);
+                    
+                    if (data.type === 'status') {
+                        statusDiv.textContent = data.message;
+                    } else if (data.type === 'result') {
+                        statusDiv.textContent = data.message;
+                        
+                        // Construct complete video URL using the base URL
+                        const videoUrl = BASE_VIDEO_URL + data.video_url;
+                        log(`Video URL: ${videoUrl}`);
+                        
+                        const videoElement = document.createElement('video');
+                        videoElement.controls = true;
+                        videoElement.src = videoUrl;
+                        videoElement.style.display = 'block';
+                        videoElement.style.marginTop = '10px';
+                        
+                        // Add video with timestamp
+                        const timestamp = new Date().toLocaleTimeString();
+                        const videoWrapper = document.createElement('div');
+                        videoWrapper.innerHTML = `<h3>Generated at ${timestamp}</h3>`;
+                        videoWrapper.appendChild(videoElement);
+                        
+                        videoContainer.prepend(videoWrapper);
+                        
+                        // Enable speak button
+                        speakButton.disabled = false;
+                    } else if (data.type === 'error') {
+                        statusDiv.textContent = data.message;
+                        statusDiv.style.borderLeftColor = 'red';
+                        // Enable speak button
+                        speakButton.disabled = false;
+                    }
+                };
+                
+                ws.onclose = function(event) {
+                    log(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
+                    statusDiv.textContent = 'Disconnected from server';
+                    statusDiv.style.borderLeftColor = 'orange';
+                    speakButton.disabled = true;
+                };
+                
+                ws.onerror = function(error) {
+                    log(`WebSocket error: ${error}`);
+                    statusDiv.textContent = 'WebSocket error';
+                    statusDiv.style.borderLeftColor = 'red';
+                    speakButton.disabled = true;
+                };
+            } catch (e) {
+                log(`Error creating WebSocket: ${e.message}`);
+                statusDiv.textContent = `Error: ${e.message}`;
+                statusDiv.style.borderLeftColor = 'red';
+                speakButton.disabled = true;
+            }
+        }
+        
+        // Button event handlers
+        speakButton.addEventListener('click', function() {
+            const text = textInput.value.trim();
+            if (text) {
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    // Disable button while processing
+                    speakButton.disabled = true;
+                    statusDiv.style.borderLeftColor = '#4CAF50';
+                    
+                    log(`Sending text: ${text}`);
+                    
+                    // Send text to server
+                    ws.send(JSON.stringify({
+                        type: 'speak',
+                        text: text
+                    }));
+                } else {
+                    log('WebSocket not connected');
+                    statusDiv.textContent = 'WebSocket not connected. Try reconnecting.';
+                    statusDiv.style.borderLeftColor = 'red';
+                }
+            } else {
+                statusDiv.textContent = 'Please enter some text';
+                statusDiv.style.borderLeftColor = 'orange';
+            }
+        });
+        
+        stopButton.addEventListener('click', function() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('Sending stop command');
+                ws.send(JSON.stringify({
+                    type: 'stop'
+                }));
+                statusDiv.textContent = 'Stopping current process';
+            } else {
+                log('WebSocket not connected, cannot send stop command');
+            }
+        });
+        
+        reconnectButton.addEventListener('click', function() {
+            log('Manual reconnection requested');
+            if (ws) {
+                ws.close();
+            }
+            setupWebSocket();
+        });
+        
+        // Try to check if localhost server is available
+        fetch(BASE_VIDEO_URL)
+            .then(response => {
+                log(`HTTP server responded with status: ${response.status}`);
+            })
+            .catch(error => {
+                log(`Error connecting to HTTP server: ${error.message}`);
+            });
+            
+        // Initialize WebSocket connection
+        setupWebSocket();
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Core dependencies for the chat script
+torch>=1.9.0
+transformers>=4.30.0
+accelerate>=0.20.0
+sentencepiece>=0.1.99
+bitsandbytes>=0.39.0  # For model quantization
+
+# TTS dependencies
+pyttsx3>=2.90        # For macOS native TTS
+numpy>=1.20.0        # For audio processing
+
+# Optional dependencies - uncomment if needed
+# ctransformers>=0.2.27  # GGUF model support (for llama.cpp models)
+# Pillow>=9.0.0  # For image handling if we add avatar display
+# opencv-python>=4.5.0  # For video processing if we add avatar display 
