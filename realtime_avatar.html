@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Talking Avatar</title>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.11.5/gsap.min.js"></script>
+  <script src="llm_connector.js"></script>
+  <script src="speech_recognition.js"></script>
+  
+  <!-- Add Web Audio Worklet for lip sync -->
+  <script>
+    // Audio context for speech analysis
+    let audioContext;
+    let audioAnalyser;
+    let analyserDataArray;
+    
+    // Initialize audio for lip sync
+    function initAudioForLipSync() {
+      try {
+        // Create audio context
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        
+        // Create analyser
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 2048;
+        analyserDataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+        
+        // Connect to audio output
+        if (typeof navigator.mediaDevices !== 'undefined' && typeof navigator.mediaDevices.getUserMedia === 'function') {
+          // Try to use the browser's output audio for analysis
+          navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(stream => {
+              const source = audioContext.createMediaStreamSource(stream);
+              source.connect(audioAnalyser);
+              console.log("Audio source connected for enhanced lip sync");
+            })
+            .catch(err => {
+              console.warn("Could not access audio output for enhanced lip sync:", err);
+            });
+        }
+      } catch (error) {
+        console.warn("WebAudio not supported for enhanced lip sync:", error);
+      }
+    }
+    
+    // Connect speech synthesis to analyzer for lip sync
+    function connectSpeechToAnalyser(utterance) {
+      // This is a workaround since we can't directly access speech synthesis audio
+      // We use the audio context to monitor output for lip sync
+      
+      if (!audioContext || !audioAnalyser) return;
+      
+      // Create virtual processor file in memory without downloading it
+      const processorCode = `
+        class LipSyncProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+          }
+
+          process(inputs, outputs) {
+            // Pass audio data to the main thread
+            this.port.postMessage({
+              audioData: inputs[0][0]
+            });
+            return true;
+          }
+        }
+
+        registerProcessor('lip-sync-processor', LipSyncProcessor);
+      `;
+
+      // Create a Blob URL without downloading
+      const blob = new Blob([processorCode], {type: 'application/javascript'});
+      const processorUrl = URL.createObjectURL(blob);
+
+      // Use the URL directly with audioWorklet.addModule() instead of downloading
+      if (audioContext && audioContext.audioWorklet) {
+        audioContext.audioWorklet.addModule(processorUrl)
+          .then(() => {
+            console.log("LipSyncProcessor loaded successfully");
+            // Create worklet node and connect it to the analyzer
+            const lipSyncNode = new AudioWorkletNode(audioContext, 'lip-sync-processor');
+            lipSyncNode.connect(audioAnalyser);
+          })
+          .catch(err => {
+            console.warn("Failed to load lip sync processor:", err);
+          });
+      }
+    }
+    
+    // Create a virtual audio node that will be connected when speech starts
+    document.addEventListener('DOMContentLoaded', () => {
+      // Initialize audio context for lip sync
+      initAudioForLipSync();
+    });
+  </script>
+  
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+      background-color: #f0f2f5;
+      color: #333;
+      overflow-y: auto;
+    }
+    .container {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .avatar-container {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16/9;
+      background-color: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    #canvasContainer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+    }
+    .loading-screen {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      z-index: 10;
+    }
+    .loading-screen h2 {
+      margin-bottom: 20px;
+    }
+    .spinner {
+      border: 5px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top: 5px solid #fff;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .controls {
+      margin: 20px 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+    }
+    button {
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      padding: 10px 15px;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    .speech-input {
+      margin: 20px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+    }
+    .input-group {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 16px;
+    }
+    .status {
+      margin-top: 10px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      border-radius: 5px;
+      text-align: center;
+    }
+    .status.listening {
+      background-color: #d4edda;
+      color: #155724;
+    }
+    .status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+    
+    /* LLM Config */
+    .llm-config {
+      margin: 20px 0;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      padding: 15px;
+      background-color: #f8f9fa;
+      width: 100%;
+    }
+    .llm-config-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+    .llm-config-content {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px;
+      align-items: center;
+    }
+    .llm-config-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .llm-config-buttons button {
+      background-color: #007bff;
+    }
+    .llm-config-buttons button:hover {
+      background-color: #0069d9;
+    }
+    
+    /* Chat history */
+    .chat-history {
+      margin: 20px 0;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      padding: 15px;
+      background-color: white;
+      max-height: 200px;
+      overflow-y: auto;
+      width: 100%;
+    }
+    .chat-message {
+      margin-bottom: 10px;
+      padding: 10px;
+      border-radius: 5px;
+    }
+    .user-message {
+      background-color: #e3f2fd;
+      text-align: right;
+      margin-left: 20%;
+    }
+    .bot-message {
+      background-color: #f1f1f1;
+      margin-right: 20%;
+    }
+    .rotation-hint {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background-color: rgba(0,0,0,0.5);
+      color: white;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      z-index: 5;
+    }
+    /* User instructions */
+    .user-instructions {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 10px 15px;
+      border-radius: 5px;
+      font-size: 14px;
+      max-width: 80%;
+      text-align: center;
+      opacity: 0.8;
+      transition: opacity 0.3s ease;
+    }
+    .user-instructions:hover {
+      opacity: 1;
+    }
+    /* Digital effect styles */
+    .digital-effect {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      opacity: 0.03;
+      background: 
+        linear-gradient(rgba(32, 193, 255, 0.05), transparent 1px) 0 0 / 100% 2px,
+        linear-gradient(90deg, rgba(32, 193, 255, 0.05), transparent 1px) 0 0 / 2px 100%;
+      z-index: 10;
+    }
+    /* Avatar shimmer effect */
+    .avatar-shimmer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      background: radial-gradient(circle at center, 
+        rgba(64, 169, 255, 0.1) 0%, 
+        rgba(32, 87, 160, 0.05) 40%, 
+        transparent 70%);
+      z-index: 5;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+    .avatar-shimmer.active {
+      opacity: 1;
+      animation: shimmer 3s infinite alternate;
+    }
+    @keyframes shimmer {
+      0% {
+        opacity: 0.1;
+      }
+      100% {
+        opacity: 0.3;
+      }
+    }
+    
+    /* Controls container */
+    .controls-container {
+      display: flex;
+      justify-content: center;
+      margin: 20px 0;
+    }
+    .buttons {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .permissions-note {
+      margin-top: 15px;
+      font-size: 14px;
+      color: rgba(255, 255, 255, 0.7);
+      max-width: 80%;
+      text-align: center;
+    }
+    
+    /* Avatar speaking indicator */
+    #avatarShimmer {
+      position: absolute;
+      bottom: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100px;
+      height: 40px;
+      border-radius: 20px;
+      background: rgba(0, 0, 0, 0.5);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      pointer-events: none;
+    }
+    
+    #avatarShimmer.active {
+      opacity: 1;
+    }
+    
+    .shimmer-bar {
+      width: 4px;
+      height: 20px;
+      background: white;
+      margin: 0 2px;
+      border-radius: 2px;
+      animation: shimmer 0.8s infinite;
+    }
+    
+    .shimmer-bar:nth-child(2) { animation-delay: 0.2s; }
+    .shimmer-bar:nth-child(3) { animation-delay: 0.4s; }
+    .shimmer-bar:nth-child(4) { animation-delay: 0.6s; }
+    
+    @keyframes shimmer {
+      0% { transform: scaleY(0.3); }
+      50% { transform: scaleY(1); }
+      100% { transform: scaleY(0.3); }
+    }
+    
+    /* Add mouth test controls */
+    .test-controls {
+      margin: 10px 0;
+      padding: 10px;
+      background-color: #f0f0f0;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    .test-header {
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    .test-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 5px;
+    }
+    .test-group input {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>AI Talking Avatar</h1>
+    </div>
+    
+    <div class="avatar-container">
+      <div id="canvasContainer"></div>
+      <div class="loading-screen" id="loadingScreen">
+        <h2>Initializing AI Avatar</h2>
+        <div class="spinner"></div>
+        <p id="loadingStatus">Loading model...</p>
+        <p class="permissions-note">This app will request webcam access to drive the avatar's expressions with your face. No video is stored or transmitted.</p>
+      </div>
+      <div class="rotation-hint">Click and drag to rotate the avatar. Scroll to zoom.</div>
+      
+      <!-- Digital effect overlays -->
+      <div class="digital-effect"></div>
+      <div class="avatar-shimmer" id="avatarShimmer">
+        <div class="shimmer-bar"></div>
+        <div class="shimmer-bar"></div>
+        <div class="shimmer-bar"></div>
+        <div class="shimmer-bar"></div>
+      </div>
+      
+      <!-- User instructions -->
+      <div class="user-instructions">
+        Use mouse to rotate and zoom. Click "Greet Me" for a welcome, or "Listen & Respond" to speak with the avatar.
+      </div>
+    </div>
+    
+    <!-- Main controls -->
+    <div class="controls-container">
+      <div class="buttons">
+        <button id="speakButton" disabled>Speak Response</button>
+        <button id="listenButton" disabled>Listen & Respond</button>
+        <button id="welcomeButton">Greet Me</button>
+        <button id="configButton">LLM Config</button>
+        <button id="clearHistory">Clear History</button>
+      </div>
+    </div>
+    
+    <!-- Add mouth test controls -->
+    <div class="test-controls">
+      <div class="test-header">Debug Controls</div>
+      <div class="test-group">
+        <label for="mouthSlider">Test Mouth: <span id="mouthValue">0</span></label>
+        <input type="range" id="mouthSlider" min="0" max="100" value="0">
+        <button id="testMouth">Test Mouth Cycle</button>
+      </div>
+    </div>
+    
+    <div class="speech-input">
+      <div class="input-group">
+        <input type="text" id="speechInput" placeholder="Type a message...">
+        <button id="speakBtn">Speak</button>
+      </div>
+      <div class="status" id="status">Ready</div>
+    </div>
+    
+    <!-- LLM Config Panel -->
+    <div class="llm-config" id="llmConfig">
+      <div class="llm-config-header">
+        <h3>LLM Configuration</h3>
+      </div>
+      <div class="llm-config-content">
+        <label for="apiUrl">API URL:</label>
+        <input type="text" id="apiUrl" value="http://localhost:8000/api/chat">
+        
+        <label for="modelName">Model:</label>
+        <input type="text" id="modelName" value="llama3">
+      </div>
+      <div class="llm-config-buttons">
+        <button id="saveLLMConfig">Save Configuration</button>
+        <button id="clearHistory">Clear Chat History</button>
+      </div>
+    </div>
+    
+    <!-- Chat history -->
+    <div class="chat-history" id="chatHistory">
+      <!-- Chat messages will appear here -->
+    </div>
+  </div>
+  
+  <!-- JavaScript files -->
+  <script src="avatar.js"></script>
+  <script src="llm_connector.js"></script>
+  <script src="speech_recognition.js"></script>
+  <script src="realtime_avatar.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Setup mouth test slider
+      const mouthSlider = document.getElementById('mouthSlider');
+      const mouthValue = document.getElementById('mouthValue');
+      const testMouthButton = document.getElementById('testMouth');
+      
+      if (mouthSlider && mouthValue) {
+        mouthSlider.addEventListener('input', function() {
+          const value = this.value / 100;
+          mouthValue.textContent = this.value + '%';
+          
+          // Apply to avatar mouth if available
+          if (window.avatar && avatar.applyMouthOpenValue) {
+            avatar.applyMouthOpenValue(value);
+          }
+        });
+      }
+      
+      if (testMouthButton) {
+        testMouthButton.addEventListener('click', function() {
+          // Run a test animation cycle
+          let value = 0;
+          let increasing = true;
+          const interval = setInterval(() => {
+            if (increasing) {
+              value += 0.05;
+              if (value >= 1) {
+                value = 1;
+                increasing = false;
+              }
+            } else {
+              value -= 0.05;
+              if (value <= 0) {
+                value = 0;
+                clearInterval(interval);
+              }
+            }
+            
+            // Update slider and apply to avatar
+            mouthSlider.value = Math.round(value * 100);
+            mouthValue.textContent = mouthSlider.value + '%';
+            
+            if (window.avatar && avatar.applyMouthOpenValue) {
+              avatar.applyMouthOpenValue(value);
+            }
+          }, 50);
+        });
+      }
+    });
+  </script>
+</body>
+</html> 
